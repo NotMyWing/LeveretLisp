@@ -16,7 +16,9 @@ type BenchRow = {
 const scenarios: Scenario[] = [
 	{ label: "concat-flat", src: "(+ \"a\" \"b\" \"c\" \"d\" \"e\")" },
 	{ label: "arith-nested", src: "(+ (* \"2\" \"3\") (* \"4\" \"5\") \"7\")" },
-	{ label: "tag-strings", src: "(foo (json_parse \"{\\\"x\\\":1}\") \"tail\")" }
+	{ label: "tag-strings", src: "(foo (json_parse \"{\\\"x\\\":1}\") \"tail\")" },
+	{ label: "loop-100", src: "(loop for i from \"0\" below \"100\" collect i)" },
+	{ label: "loop-while", src: "(let ((x \"0\")) (loop while (< x \"50\") collect (set! x (- x \"-1\"))))" }
 ];
 
 const execTag = (_name: string, _args: string) => "";

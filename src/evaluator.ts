@@ -28,7 +28,7 @@ type JitFn = (scope: Env, helpers: {
 }) => any;
 const jitCache = new WeakMap<object, JitFn>();
 export const jitStats = { compiles: 0, hits: 0 };
-const disallowedJitHeads = new Set(["if", "quote", "quasiquote", "unquote", "let", "let*", "cond", "case", "defmacro"]);
+const disallowedJitHeads = new Set(["if", "quote", "quasiquote", "unquote", "let", "let*", "cond", "case", "defmacro", "loop", "set!"]);
 const constFoldBuiltins = new Set(["concat", "+", "-", "*", "=", "<", ">", "<=", ">=", "len", "upper", "lower", "trim"]);
 
 export interface EvaluateOptions {
@@ -57,6 +57,16 @@ class Env {
 
 	set(name: string, value: any) {
 		this.bindings.set(name, value);
+		return value;
+	}
+
+	update(name: string, value: any) {
+		if (this.bindings.has(name)) {
+			this.bindings.set(name, value);
+			return value;
+		}
+		if (this.parent) return this.parent.update(name, value);
+		throw new Error(`unbound symbol: ${name}`);
 	}
 }
 
@@ -478,6 +488,86 @@ export function evaluate(
 		return result;
 	}
 
+	function evalLoop(args: ASTNode[], scope: Env): any {
+		let idx = 0;
+		const expectSymbol = (node: ASTNode, text: string) => {
+			if (node.type !== "Symbol" || node.name !== text) throw new Error(`loop: expected ${text}`);
+		};
+
+		if (args.length < 2) throw new Error("loop: invalid form");
+
+		const results: any[] = [];
+		const loopEnv = new Env(scope);
+
+		if (args[0].type === "Symbol" && args[0].name === "while") {
+			// (loop while <test> collect <expr>)
+			if (args.length < 3) throw new Error("loop while: expected test and collect");
+			const testExpr = args[1];
+			let collectExpr: ASTNode | undefined;
+			for (let j = 2; j < args.length; j++) {
+				if (args[j].type === "Symbol" && args[j].name === "collect") {
+					collectExpr = args[j + 1];
+					break;
+				}
+			}
+			if (!collectExpr) throw new Error("loop while: missing collect expression");
+			while (isTruthy(evalWithMacros(testExpr, loopEnv))) {
+				const val = evalWithMacros(collectExpr, loopEnv);
+				results.push(val);
+			}
+			return results;
+		}
+
+		// for/below/to form
+		if (args.length < 7) throw new Error("loop: invalid form");
+		expectSymbol(args[idx++], "for");
+		const varNode = args[idx++];
+		if (varNode.type !== "Symbol") throw new Error("loop: expected loop variable");
+		expectSymbol(args[idx++], "from");
+		const startNode = args[idx++];
+		const relNode = args[idx++];
+		if (relNode.type !== "Symbol" || (relNode.name !== "to" && relNode.name !== "below")) {
+			throw new Error("loop: expected to/below");
+		}
+		const endNode = args[idx++];
+		let stepNode: ASTNode | undefined;
+		if (args[idx] && args[idx].type === "Symbol" && args[idx].name === "by") {
+			idx++;
+			stepNode = args[idx++];
+		}
+		expectSymbol(args[idx++], "collect");
+		const collectNode = args[idx];
+		if (!collectNode) throw new Error("loop: missing collect expression");
+
+		const startNum = Number(evalWithMacros(startNode, scope));
+		const endNum = Number(evalWithMacros(endNode, scope));
+		if (Number.isNaN(startNum) || Number.isNaN(endNum)) throw new Error("loop: invalid numbers");
+		const stepVal = stepNode ? Number(evalWithMacros(stepNode, scope)) : (startNum <= endNum ? 1 : -1);
+		if (Number.isNaN(stepVal) || stepVal === 0) throw new Error("loop: invalid step");
+		const inclusive = relNode.name === "to";
+
+		for (let i = startNum; ; i += stepVal) {
+			const done = stepVal > 0
+				? inclusive ? i > endNum : i >= endNum
+				: inclusive ? i < endNum : i <= endNum;
+			if (done) break;
+
+			loopEnv.set(varNode.name, String(i));
+			const val = evalWithMacros(collectNode, loopEnv);
+			results.push(val);
+		}
+
+		return results;
+	}
+
+	function evalSet(args: ASTNode[], scope: Env): any {
+		if (args.length !== 2) throw new Error("set!: expected name and value");
+		const nameNode = args[0];
+		if (nameNode.type !== "Symbol") throw new Error("set!: name must be symbol");
+		const value = evalWithMacros(args[1], scope);
+		return scope.update(nameNode.name, value);
+	}
+
 	function defineMacro(args: ASTNode[], scope: Env) {
 		if (args.length < 2) throw new Error("defmacro requires name and params");
 		const nameNode = args[0];
@@ -588,6 +678,14 @@ export function evaluate(
 
 		if (name === "defmacro") {
 			return defineMacro(args, scope);
+		}
+
+		if (name === "loop") {
+			return evalLoop(args, scope);
+		}
+
+		if (name === "set!") {
+			return evalSet(args, scope);
 		}
 
 		if (hasBuiltin(name)) {

@@ -1096,4 +1096,105 @@ describe("17. JIT cache", () => {
 		expect(jitStats.hits).toBe(0);
 	});
 });
+
+describe("18. Loop (Common Lisp style subset)", () => {
+	test("inclusive to loop collects values", () => {
+		const res = evalSrc("(loop for i from \"1\" to \"3\" collect i)");
+		expect(res).toEqual(["1", "2", "3"]);
+	});
+
+	test("below loop with positive step", () => {
+		const res = evalSrc("(loop for i from \"5\" below \"9\" by \"2\" collect i)");
+		expect(res).toEqual(["5", "7"]);
+	});
+
+	test("descending loop with to and negative step", () => {
+		const res = evalSrc("(loop for i from \"3\" to \"1\" by \"-1\" collect i)");
+		expect(res).toEqual(["3", "2", "1"]);
+	});
+
+	test("while loop collects until condition false", () => {
+		const res = evalSrc(`
+      (let ((x "0"))
+        (loop while (< x "3") collect (set! x (- x "-1"))))
+    `);
+		expect(res).toEqual(["1", "2", "3"]);
+	});
+});
+
+describe("19. Integrated stress programs", () => {
+	test("triangle numbers up to 200", () => {
+		const res = evalSrc(`
+      (let ((sum "0"))
+        (loop for i from "1" to "200" collect
+          (let ((n (- sum (- "0" i))))
+            (set! sum n))))
+    `);
+		expect(res.slice(0, 5)).toEqual(["1", "3", "6", "10", "15"]);
+		expect(res[res.length - 1]).toBe("20100");
+	});
+
+	test("map/filter style transformation", () => {
+		const res = evalSrc(`
+      (let ((out (loop for i from "1" to "6" collect (* i i))))
+        (join "," out))
+    `);
+		expect(res).toBe(JSON.stringify(["1","4","9","16","25","36"]));
+	});
+
+	test("alist reshape and aggregation", () => {
+		const res = evalSrc(`
+      (let ((pairs (list
+        (list "name" "bob")
+        (list "score" "90")
+        (list "city" "x"))))
+        (let ((name "") (score "0"))
+        (loop for idx from "0" below (get pairs "length") collect
+            (let ((pair (get pairs idx)))
+              (case (car pair)
+                ("name" (set! name (car (cdr pair))))
+                ("score" (set! score (car (cdr pair))))))
+            )
+          (concat name ":" score)))
+    `);
+		expect(res).toEqual("bob:90");
+	});
+
+	test("nested loops with conditional aggregation", () => {
+		const res = evalSrc(`
+      (let ((rows (list
+        (list "alice" "10" "20")
+        (list "bob" "5" "15")
+        (list "carol" "7" "30")))
+        (tot "0")
+        (hi ""))
+        (loop for r from "0" below (get rows "length") collect
+            (let ((row (get rows r))
+                (name (get row "0"))
+                (a (get row "1"))
+                (b (get row "2")))
+            (let ((sum (- a (- "0" b))))
+              (set! tot (- tot (- "0" sum)))
+              (if (> a "6")
+                  (set! hi (concat hi name ";"))
+                  hi)
+              sum)))
+        (list tot hi))
+    `);
+		expect(res).toEqual(["87", "alice;carol;"]);
+	});
+
+	test("JSON decode/encode with numeric processing", () => {
+		const res = evalSrc(`
+      (let ((payload (json_parse "{\\\"items\\\":[1,2,3,4,5]}"))
+            (acc "0"))
+        (loop for i from "0" below (get (get payload "items") "length") collect
+          (let ((v (get (get payload "items") i)))
+            (set! acc (- acc (- "0" v)))
+            (number v)))
+        (json_stringify (list "sum" acc)))
+    `);
+		expect(res).toBe(JSON.stringify(["sum", "15"]));
+	});
+});
 });
