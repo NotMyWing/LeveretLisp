@@ -415,6 +415,30 @@ export function evaluate(
 	_inMacro = false,
 	options: EvaluateOptions = {}
 ): any {
+	const trace: string[] = [];
+	const runWithTrace = <T>(label: string, fn: () => T): T => {
+		trace.push(label);
+		try {
+			return fn();
+		} catch (e: any) {
+			if (!e || (e as any)._leveretlispTrace) throw e;
+			(e as any)._leveretlispTrace = true;
+			const traceLines = trace.join(" > ");
+			e.message = `${e.message}\nTrace: ${traceLines}`;
+			throw e;
+		} finally {
+			trace.pop();
+		}
+	};
+	const describeNode = (node: AnyNode): string => {
+		if ((node as ProgramNode).type === "Program") return "Program";
+		const n = node as ASTNode;
+		if (n.type === "List" && n.head.type === "Symbol") return `(${n.head.name})`;
+		if (n.type === "Symbol") return n.name;
+		if (n.type === "StringLiteral") return `"${n.value}"`;
+		return n.type;
+	};
+
 	const useJit = options.enableJit !== false;
 	const jitHelpers = {
 		callTag: (name: string, vals: any[]) => callTag(name, vals),
@@ -721,22 +745,24 @@ export function evaluate(
 	}
 
 	function evalWithMacros(node: ASTNode, scope: Env = env): any {
-		const expanded = macroExpand(node);
-		if (
-			expanded.type === "List" &&
-			expanded.head.type === "Symbol" &&
-			expanded.head.name === "quote"
-		) {
-			return evalQuote(expanded.args[0]);
-		}
-		if (useJit) {
-			const maybeJit = expanded === node ? getJit(node) : getJit(expanded);
-			if (maybeJit) {
-				jitStats.hits++;
-				return maybeJit(scope, jitHelpers);
+		return runWithTrace(describeNode(node), () => {
+			const expanded = macroExpand(node);
+			if (
+				expanded.type === "List" &&
+				expanded.head.type === "Symbol" &&
+				expanded.head.name === "quote"
+			) {
+				return evalQuote(expanded.args[0]);
 			}
-		}
-		return evalNode(expanded, scope);
+			if (useJit) {
+				const maybeJit = expanded === node ? getJit(node) : getJit(expanded);
+				if (maybeJit) {
+					jitStats.hits++;
+					return maybeJit(scope, jitHelpers);
+				}
+			}
+			return evalNode(expanded, scope);
+		});
 	}
 
 	function evalNode(node: ASTNode, scope: Env = env): any {

@@ -33,9 +33,13 @@ For tag-stream evaluation inside `%t leveretlisp` (and aliases).
 - `(quote x)` — returns literal AST
 - `(quasiquote x)` / `(unquote x)` — supports nesting; `unquote` inside quasiquote evaluates
 - `(let ((name val) ...) body...)` — sequential bindings; `(let* ...)` is an alias
+- `(set! name value)` — mutates an existing binding in the nearest scope where it is found
 - `(defmacro name (params...) body...)` — defines a macro in the current env
 - `(cond (test body...) ... )` — `t`/`otherwise` as default; supports arrow clauses: `(cond (test => fn))` calls `fn` with test value
 - `(case key ( (k1 k2 ...) body...) ... (t default))` — matches by stringified equality; default via `t`/`otherwise`
+- `(loop ...)` — Common Lisp–style subset:
+  - `(loop for i from A to|below B [by STEP] collect EXPR)`; step defaults to 1 (or -1 if descending); returns list of collected results.
+  - `(loop while TEST collect EXPR)` — repeats while TEST is truthy, collecting EXPR each time.
 
 ### 3.2 Macros
 - Macros receive raw AST args and expand to AST.
@@ -50,6 +54,7 @@ For tag-stream evaluation inside `%t leveretlisp` (and aliases).
 - JSON: `json_parse`, `json_stringify`
 - Data access: `get obj key`
 - List utilities: `list`, `cons`, `car`, `cdr`, `mapcar`, `assoc`
+- Mutation: `set!` special form updates an existing binding (used in loops or stateful code)
 - Env access: `msg`, `util`, `tag`, `overclocking`, `http`
 - HTTP wrappers: `http_request` (string URL or JSON string/object), `http_get`
 - Discord helper: `unembed_desc`
@@ -80,6 +85,11 @@ For tag-stream evaluation inside `%t leveretlisp` (and aliases).
   - Multiple args: `toStringValue` for each, joined with space
 - Nested tags are fully evaluated before outer calls.
 
+## 6. JIT and Performance
+- A small JIT path is enabled by default. It memoizes simple application forms (non-special forms) and constant-folds pure builtins. You can disable it by passing `{ enableJit: false }` to `evaluate` or `runLeveretLisp`.
+- Special forms like `loop`, `let`, `if`, `cond`, `case`, `defmacro`, `quote` remain interpreted to preserve semantics.
+- Benchmarks: `npm run bench` runs a small harness comparing JIT on/off across several scenarios.
+
 ## 6. Return Payload
 - Strings => `{ content: string }`
 - Objects are passed through verbatim (no wrapping). If you need `{ content, embed }`, return that shape.
@@ -97,6 +107,7 @@ For tag-stream evaluation inside `%t leveretlisp` (and aliases).
 ## 9. Errors
 - Syntax errors: unterminated string, unmatched paren, unexpected token.
 - Runtime errors: head not symbol, invalid macro expansion (must return AST), let binding shape invalid, `unquote` outside `quasiquote`, arity errors in macros, number coercion failures, unknown tag head type.
+- Errors include a simple trace of evaluation frames (e.g., `Trace: (case) > >`) to show where evaluation was when the error was thrown.
 
 ## 10. Examples
 - Concatenation: `(concat "a" "b" "c")` -> `"abc"`
