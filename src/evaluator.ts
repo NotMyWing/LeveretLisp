@@ -21,6 +21,9 @@ const hasBuiltin = (name: string): boolean =>
 const isTruthy = (v: any): boolean =>
 	!(v === null || v === undefined || v === "" || v === false || v === 0 || v === "false");
 
+const functionRegistry = new Map<string, FunctionValue>();
+
+type FunctionValue = { type: "Function"; params: string[]; body: ASTNode[]; env: Env };
 type JitFn = (scope: Env, helpers: {
 	callTag: (name: string, vals: any[]) => any;
 	evalSymbol: (name: string, scope: Env) => any;
@@ -28,7 +31,11 @@ type JitFn = (scope: Env, helpers: {
 }) => any;
 const jitCache = new WeakMap<object, JitFn>();
 export const jitStats = { compiles: 0, hits: 0 };
-const disallowedJitHeads = new Set(["if", "quote", "quasiquote", "unquote", "let", "let*", "cond", "case", "defmacro", "loop", "set!"]);
+const disallowedJitHeads = new Set([
+	"if", "quote", "quasiquote", "unquote",
+	"let", "let*", "cond", "case", "defmacro",
+	"loop", "set!", "lambda", "defun", "funcall", "apply", "progn", "dotimes", "dolist"
+]);
 const constFoldBuiltins = new Set(["concat", "+", "-", "*", "=", "<", ">", "<=", ">=", "len", "upper", "lower", "trim"]);
 
 export interface EvaluateOptions {
@@ -415,6 +422,7 @@ export function evaluate(
 	_inMacro = false,
 	options: EvaluateOptions = {}
 ): any {
+	functionRegistry.clear();
 	const trace: string[] = [];
 	const runWithTrace = <T>(label: string, fn: () => T): T => {
 		trace.push(label);
@@ -458,11 +466,12 @@ export function evaluate(
 
 		const parts = argVals.map(toStringValue);
 		const argsStr = parts.length === 1 ? parts[0] : parts.join(" ");
-		return execTag(name, argsStr);
+		return execTag(name, typeof argsStr === "string" ? argsStr : String(argsStr));
 	}
 
 	function evalSymbol(name: string, scope: Env): any {
 		if (scope.has(name)) return scope.get(name);
+		if (functionRegistry.has(name)) return functionRegistry.get(name)!;
 		if (hasBuiltin(name)) return builtins[name]();
 		return callTag(name, []);
 	}
@@ -592,6 +601,111 @@ export function evaluate(
 		return scope.update(nameNode.name, value);
 	}
 
+	function evalLambda(args: ASTNode[], scope: Env): FunctionValue {
+		if (args.length < 2) throw new Error("lambda: needs params and body");
+		const paramsNode = listToArray(args[0]);
+		const params: string[] = [];
+		for (const p of paramsNode) {
+			if (p.type !== "Symbol") throw new Error("lambda: params must be symbols");
+			params.push(p.name);
+		}
+		const body = args.slice(1);
+		return { type: "Function", params, body, env: scope };
+	}
+
+	function evalDefun(args: ASTNode[], scope: Env): any {
+		if (args.length < 3) throw new Error("defun: needs name, params, body");
+		const nameNode = args[0];
+		if (nameNode.type !== "Symbol") throw new Error("defun: name must be symbol");
+		const fn = evalLambda(args.slice(1), scope);
+		scope.set(nameNode.name, fn);
+		functionRegistry.set(nameNode.name, fn);
+		return nameNode.name;
+	}
+
+	function applyFunction(fn: FunctionValue, values: any[]): any {
+		if (fn.params.length !== values.length) throw new Error("function arity mismatch");
+		const local = new Env(fn.env);
+		fn.params.forEach((p, idx) => local.set(p, values[idx]));
+		let result: any = null;
+		for (const expr of fn.body) {
+			result = evalWithMacros(expr, local);
+		}
+		return result;
+	}
+
+	function evalFuncall(args: ASTNode[], scope: Env): any {
+		if (args.length < 1) throw new Error("funcall: needs callable");
+		const fnVal = evalWithMacros(args[0], scope);
+		const callArgs = args.slice(1).map(a => evalWithMacros(a, scope));
+		return callCallable(fnVal, callArgs);
+	}
+
+	function evalApply(args: ASTNode[], scope: Env): any {
+		if (args.length < 2) throw new Error("apply: needs callable and args list");
+		const fnVal = evalWithMacros(args[0], scope);
+		const listVal = evalWithMacros(args[1], scope);
+		const callArgs = Array.isArray(listVal) ? listVal : [];
+		return callCallable(fnVal, callArgs);
+	}
+
+	function callCallable(fnVal: any, callArgs: any[]): any {
+		if (typeof fnVal === "string" && functionRegistry.has(fnVal)) {
+			const fn = functionRegistry.get(fnVal)!;
+			return applyFunction(fn, callArgs);
+		}
+		if (fnVal && (fnVal as any).type === "Function") return applyFunction(fnVal as FunctionValue, callArgs);
+		if (typeof fnVal === "string" && hasBuiltin(fnVal)) return (builtins as any)[fnVal](...callArgs);
+		if (typeof fnVal === "string") return callTag(fnVal, callArgs);
+		if (typeof fnVal === "function") return fnVal(...callArgs);
+		throw new Error("funcall/apply: not callable");
+	}
+
+	function evalProgn(args: ASTNode[], scope: Env): any {
+		let result: any = null;
+		for (const expr of args) result = evalWithMacros(expr, scope);
+		return result;
+	}
+
+	function evalDotimes(args: ASTNode[], scope: Env): any {
+		if (args.length < 2) throw new Error("dotimes: needs binding and body");
+		const binding = listToArray(args[0]);
+		if (binding.length < 2 || binding[0].type !== "Symbol") throw new Error("dotimes: invalid binding");
+		const varName = binding[0].name;
+		const count = Number(evalWithMacros(binding[1], scope));
+		const resultExpr = binding[2];
+		if (Number.isNaN(count)) throw new Error("dotimes: invalid count");
+		const body = args.slice(1);
+		let result: any = null;
+		const inner = new Env(scope);
+		for (let i = 0; i < count; i++) {
+			inner.set(varName, String(i));
+			for (const expr of body) result = evalWithMacros(expr, inner);
+		}
+		if (resultExpr) return evalWithMacros(resultExpr, inner);
+		return result;
+	}
+
+	function evalDolist(args: ASTNode[], scope: Env): any {
+		if (args.length < 2) throw new Error("dolist: needs binding and body");
+		const binding = listToArray(args[0]);
+		if (binding.length < 2 || binding[0].type !== "Symbol") throw new Error("dolist: invalid binding");
+		const varName = binding[0].name;
+		const listVal = evalWithMacros(binding[1], scope);
+		const resultExpr = binding[2];
+		const body = args.slice(1);
+		let result: any = null;
+		if (Array.isArray(listVal)) {
+			const inner = new Env(scope);
+			for (const item of listVal) {
+				inner.set(varName, item);
+				for (const expr of body) result = evalWithMacros(expr, inner);
+			}
+			if (resultExpr) return evalWithMacros(resultExpr, inner);
+		}
+		return null;
+	}
+
 	function defineMacro(args: ASTNode[], scope: Env) {
 		if (args.length < 2) throw new Error("defmacro requires name and params");
 		const nameNode = args[0];
@@ -614,6 +728,9 @@ export function evaluate(
 			throw new Error("list head must be a symbol");
 
 		const name = head.name;
+		const headVal = scope.has(name)
+			? scope.get(name)
+			: (functionRegistry.has(name) ? functionRegistry.get(name)! : undefined);
 
 		if (name === "if") {
 			if (args.length < 2) throw new Error("if requires a condition and a consequent");
@@ -712,13 +829,42 @@ export function evaluate(
 			return evalSet(args, scope);
 		}
 
+		if (name === "lambda") {
+			return evalLambda(args, scope);
+		}
+
+		if (name === "defun") {
+			return evalDefun(args, scope);
+		}
+
+		if (name === "progn") {
+			return evalProgn(args, scope);
+		}
+
+		if (name === "funcall") {
+			return evalFuncall(args, scope);
+		}
+
+		if (name === "apply") {
+			return evalApply(args, scope);
+		}
+
+		if (name === "dotimes") {
+			return evalDotimes(args, scope);
+		}
+
+		if (name === "dolist") {
+			return evalDolist(args, scope);
+		}
+
 		if (hasBuiltin(name)) {
 			const values = args.map(arg => evalWithMacros(arg, scope));
 			return builtins[name](...values);
 		}
 
 		const values = args.map(arg => evalWithMacros(arg, scope));
-		return callTag(name, values);
+		const callee = typeof headVal !== "undefined" ? headVal : head.name;
+		return callCallable(callee, values);
 	}
 
 	function macroExpand(node: ASTNode): ASTNode {

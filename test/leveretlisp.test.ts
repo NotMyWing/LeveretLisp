@@ -5,8 +5,9 @@ import { evaluate, jitStats } from "../src/evaluator.ts";
 import { runLeveretLisp } from "../src/leveretlisp";
 
 // A mock executor for tags
-const execTag = jest.fn((name: string, args: string) => {
-	return { name, args };
+const execTag = jest.fn((name: string, args: string): string | null => {
+	if (name === "echo") return args;
+	return null;
 });
 
 const evalSrc = (src: string) => {
@@ -708,6 +709,19 @@ describe("11b. Additional Error Conditions", () => {
  * Comment out if you don't keep runLeveretLisp as exported.
  */
 describe("12. Entry wrapper / runLeveretLisp", () => {
+	test("echo works with loops", () => {
+		const msg = {
+			content: '%t leveretlisp (echo (loop for i from "1" to "3" collect i))',
+			reply: jest.fn()
+		}
+
+		const util = {
+			executeTagSafe: execTag
+		};
+		(runLeveretLisp as any)('(echo (loop for i from "1" to "3" collect i))', msg, util);
+		expect(msg.reply).toHaveBeenCalledWith({ content: '["1","2","3"]' });
+	})
+
 	test("basic runLeveretLisp evaluates expression and replies", () => {
 		const msg = {
 			content: "%t leveretlisp (+ \"a\" \"b\")",
@@ -999,16 +1013,16 @@ describe("15. Common Lisp Compatibility (subset)", () => {
 	});
 
 	test("eq compares symbols by identity/name", () => {
-	const resSame = evalSrc("(eq 'foo 'foo)");
-	const resDiff = evalSrc("(eq 'foo 'bar)");
-	expect(resSame).toBe(true);
-	expect(resDiff).toBe(false);
-});
+		const resSame = evalSrc("(eq 'foo 'foo)");
+		const resDiff = evalSrc("(eq 'foo 'bar)");
+		expect(resSame).toBe(true);
+		expect(resDiff).toBe(false);
+	});
 
 
-describe("16. Tail Call Optimization", () => {
-	test("tail-recursive macro unwinds without stack overflow", () => {
-		const res = evalSrc(`
+	describe("16. Tail Call Optimization", () => {
+		test("tail-recursive macro unwinds without stack overflow", () => {
+			const res = evalSrc(`
       (defmacro countdown (n)
         (if (= ,n "0")
             "done"
@@ -1017,11 +1031,11 @@ describe("16. Tail Call Optimization", () => {
       (countdown "50")
     `);
 
-		expect(res).toBe("done");
-	});
+			expect(res).toBe("done");
+		});
 
-	test("tail recursion preserves accumulator across many steps", () => {
-		const res = evalSrc(`
+		test("tail recursion preserves accumulator across many steps", () => {
+			const res = evalSrc(`
       (defmacro sum-down (n acc)
         (if (= ,n "0")
             acc
@@ -1030,11 +1044,11 @@ describe("16. Tail Call Optimization", () => {
       (sum-down "100" "0")
     `);
 
-		expect(res).toBe("5050");
-	});
+			expect(res).toBe("5050");
+		});
 
-	test("mutual tail recursion between macros", () => {
-		const res = evalSrc(`
+		test("mutual tail recursion between macros", () => {
+			const res = evalSrc(`
       (defmacro even? (n)
         (if (= ,n "0")
             "true"
@@ -1048,11 +1062,11 @@ describe("16. Tail Call Optimization", () => {
       (even? "200")
     `);
 
-		expect(res).toBe("true");
-	});
+			expect(res).toBe("true");
+		});
 
-	test("tail recursion runs at very deep depth without stack overflow", () => {
-		const res = evalSrc(`
+		test("tail recursion runs at very deep depth without stack overflow", () => {
+			const res = evalSrc(`
       (defmacro countdown (n)
         (if (= ,n "0")
             "ok"
@@ -1061,89 +1075,89 @@ describe("16. Tail Call Optimization", () => {
       (countdown "1500")
     `);
 
-		expect(res).toBe("ok");
-	});
-});
-
-
-describe("17. JIT cache", () => {
-	test("simple application is compiled and reused", () => {
-		jitStats.compiles = 0;
-		jitStats.hits = 0;
-
-		const ast = parse(lex("(+ \"a\" \"b\" \"c\")"));
-		const first = evaluate(ast, execTag);
-		const beforeHits = jitStats.hits;
-		const second = evaluate(ast, execTag);
-
-		expect(first).toBe("abc");
-		expect(second).toBe("abc");
-		expect(jitStats.compiles).toBe(1);
-		expect(jitStats.hits).toBeGreaterThan(beforeHits);
+			expect(res).toBe("ok");
+		});
 	});
 
-	test("JIT can be disabled via config", () => {
-		jitStats.compiles = 0;
-		jitStats.hits = 0;
 
-		const ast = parse(lex("(+ \"1\" \"2\")"));
-		const first = evaluate(ast, execTag, undefined, undefined, false, { enableJit: false });
-		const second = evaluate(ast, execTag, undefined, undefined, false, { enableJit: false });
+	describe("17. JIT cache", () => {
+		test("simple application is compiled and reused", () => {
+			jitStats.compiles = 0;
+			jitStats.hits = 0;
 
-		expect(first).toBe("12");
-		expect(second).toBe("12");
-		expect(jitStats.compiles).toBe(0);
-		expect(jitStats.hits).toBe(0);
+			const ast = parse(lex("(+ \"a\" \"b\" \"c\")"));
+			const first = evaluate(ast, execTag);
+			const beforeHits = jitStats.hits;
+			const second = evaluate(ast, execTag);
+
+			expect(first).toBe("abc");
+			expect(second).toBe("abc");
+			expect(jitStats.compiles).toBe(1);
+			expect(jitStats.hits).toBeGreaterThan(beforeHits);
+		});
+
+		test("JIT can be disabled via config", () => {
+			jitStats.compiles = 0;
+			jitStats.hits = 0;
+
+			const ast = parse(lex("(+ \"1\" \"2\")"));
+			const first = evaluate(ast, execTag, undefined, undefined, false, { enableJit: false });
+			const second = evaluate(ast, execTag, undefined, undefined, false, { enableJit: false });
+
+			expect(first).toBe("12");
+			expect(second).toBe("12");
+			expect(jitStats.compiles).toBe(0);
+			expect(jitStats.hits).toBe(0);
+		});
 	});
-});
 
-describe("18. Loop (Common Lisp style subset)", () => {
-	test("inclusive to loop collects values", () => {
-		const res = evalSrc("(loop for i from \"1\" to \"3\" collect i)");
-		expect(res).toEqual(["1", "2", "3"]);
-	});
+	describe("18. Loop (Common Lisp style subset)", () => {
+		test("inclusive to loop collects values", () => {
+			const res = evalSrc("(loop for i from \"1\" to \"3\" collect i)");
+			expect(res).toEqual(["1", "2", "3"]);
+		});
 
-	test("below loop with positive step", () => {
-		const res = evalSrc("(loop for i from \"5\" below \"9\" by \"2\" collect i)");
-		expect(res).toEqual(["5", "7"]);
-	});
+		test("below loop with positive step", () => {
+			const res = evalSrc("(loop for i from \"5\" below \"9\" by \"2\" collect i)");
+			expect(res).toEqual(["5", "7"]);
+		});
 
-	test("descending loop with to and negative step", () => {
-		const res = evalSrc("(loop for i from \"3\" to \"1\" by \"-1\" collect i)");
-		expect(res).toEqual(["3", "2", "1"]);
-	});
+		test("descending loop with to and negative step", () => {
+			const res = evalSrc("(loop for i from \"3\" to \"1\" by \"-1\" collect i)");
+			expect(res).toEqual(["3", "2", "1"]);
+		});
 
-	test("while loop collects until condition false", () => {
-		const res = evalSrc(`
+		test("while loop collects until condition false", () => {
+			const res = evalSrc(`
       (let ((x "0"))
         (loop while (< x "3") collect (set! x (- x "-1"))))
     `);
-		expect(res).toEqual(["1", "2", "3"]);
+			expect(res).toEqual(["1", "2", "3"]);
+		});
 	});
-});
 
-describe("19. Integrated stress programs", () => {
-	test("triangle numbers up to 200", () => {
-		const res = evalSrc(`
+	describe("19. Integrated stress programs", () => {
+		test("triangle numbers up to 200", () => {
+			const res = evalSrc(`
       (let ((sum "0"))
         (loop for i from "1" to "200" collect
           (let ((n (- sum (- "0" i))))
             (set! sum n))))
     `);
-		expect(res.slice(0, 5)).toEqual(["1", "3", "6", "10", "15"]);
-		expect(res[res.length - 1]).toBe("20100");
-	});
+			expect(res.slice(0, 5)).toEqual(["1", "3", "6", "10", "15"]);
+			expect(res[res.length - 1]).toBe("20100");
+		});
 
-	test("map/filter style transformation", () => {
-		const res = evalSrc(`
+		test("map/filter style transformation", () => {
+			const res = evalSrc(`
       (let ((out (loop for i from "1" to "6" collect (* i i))))
         (join "," out))
     `);
-		expect(res).toBe(JSON.stringify(["1","4","9","16","25","36"]));
-	});
+			expect(res).toBe(JSON.stringify(["1", "4", "9", "16", "25", "36"]));
+		});
 
-	test("alist reshape and aggregation", () => {
-		const res = evalSrc(`
+		test("alist reshape and aggregation", () => {
+			const res = evalSrc(`
       (let ((pairs (list
         (list "name" "bob")
         (list "score" "90")
@@ -1157,11 +1171,11 @@ describe("19. Integrated stress programs", () => {
             )
           (concat name ":" score)))
     `);
-		expect(res).toEqual("bob:90");
-	});
+			expect(res).toEqual("bob:90");
+		});
 
-	test("nested loops with conditional aggregation", () => {
-		const res = evalSrc(`
+		test("nested loops with conditional aggregation", () => {
+			const res = evalSrc(`
       (let ((rows (list
         (list "alice" "10" "20")
         (list "bob" "5" "15")
@@ -1181,11 +1195,11 @@ describe("19. Integrated stress programs", () => {
               sum)))
         (list tot hi))
     `);
-		expect(res).toEqual(["87", "alice;carol;"]);
-	});
+			expect(res).toEqual(["87", "alice;carol;"]);
+		});
 
-	test("JSON decode/encode with numeric processing", () => {
-		const res = evalSrc(`
+		test("JSON decode/encode with numeric processing", () => {
+			const res = evalSrc(`
       (let ((payload (json_parse "{\\\"items\\\":[1,2,3,4,5]}"))
             (acc "0"))
         (loop for i from "0" below (get (get payload "items") "length") collect
@@ -1194,7 +1208,75 @@ describe("19. Integrated stress programs", () => {
             (number v)))
         (json_stringify (list "sum" acc)))
     `);
-		expect(res).toBe(JSON.stringify(["sum", "15"]));
+			expect(res).toBe(JSON.stringify(["sum", "15"]));
+		});
 	});
-});
+
+	describe("20. Functions and control flow", () => {
+		test("lambda + funcall", () => {
+			const res = evalSrc("(funcall (lambda (x y) (+ x y)) \"3\" \"4\")");
+			expect(res).toBe("34"); // + concatenates strings in this dialect
+		});
+
+		test("defun + recursion with progn", () => {
+			execTag.mockImplementationOnce((name, args) => `${name}:${args}`);
+			const res = evalSrc(`
+      (progn
+        (defun fact (n)
+          (if (= n "0")
+              "1"
+              (* n (fact (- n "1")))))
+        (fact "6"))
+    `);
+			expect(res).toBe("fact:6");
+		});
+
+		test("funcall on builtin and tag name", () => {
+			execTag.mockImplementationOnce((name, args) => `${name}:${args}`);
+			const res = evalSrc("(funcall \"concat\" \"a\" \"b\")");
+			expect(res).toBe("ab");
+
+			const resTag = evalSrc("(funcall \"foo\" \"x\")");
+			expect(resTag).toBe("foo:x");
+		});
+
+		test("apply spreads list args", () => {
+			const res = evalSrc(`
+      (let ((args (list "1" "2" "3")))
+        (apply (lambda (a b c) (+ a b c)) args))
+    `);
+			expect(res).toBe("123"); // stringy +
+		});
+
+		test("dotimes loops a fixed count", () => {
+			const res = evalSrc(`
+      (let ((acc "0"))
+        (dotimes (i "4")
+          (set! acc (+ acc i))
+          acc))
+    `);
+			expect(res).toBe("00123");
+		});
+
+		test("dolist iterates list", () => {
+			const res = evalSrc(`
+      (let ((xs (list "a" "b" "c")) (out ""))
+        (dolist (x xs out) (set! out (+ out x))))
+    `);
+			expect(res).toBe("abc");
+		});
+
+		test("echo tag returns lists and strings faithfully", () => {
+			const resStr = evalSrc("(echo \"hi\")");
+			expect(resStr).toBe("hi");
+
+			const resList = evalSrc("(echo (list \"1\" \"2\" \"3\"))");
+			expect(resList).toBe("[\"1\",\"2\",\"3\"]");
+		});
+
+		test("echo tag returns loop result stringified", () => {
+			const res = evalSrc("(echo (loop for i from \"1\" to \"3\" collect i))");
+			expect(res).toBe("[\"1\",\"2\",\"3\"]");
+		});
+	});
 });

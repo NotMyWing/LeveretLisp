@@ -41,6 +41,9 @@ export function lex(input: string): Token[] {
 			let closed = false;
 			while (j < input.length) {
 				const c = input[j];
+				if (quote === "'" && isSpace(c)) {
+					break;
+				}
 				if (c === "\\") {
 					if (j + 1 >= input.length) break;
 					const n = input[j + 1];

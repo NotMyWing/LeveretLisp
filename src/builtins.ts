@@ -273,19 +273,20 @@ export const builtins: Builtins = {
 
 	eq(a: any, b: any) {
 		if (a === b) return true;
-		const normalize = (v: any) => {
-			if (v && typeof v === "object" && (v as any).type === "Symbol") {
-				return `SYM:${(v as any).name}`;
+		const symbolName = (v: any) => {
+			if (v && typeof v === "object" && (v as any).type === "Symbol" && typeof (v as any).name === "string") {
+				return (v as any).name;
 			}
 			if (v && typeof v === "object" && typeof (v as any).name === "string") {
-				return `NAME:${(v as any).name}`;
+				return (v as any).name;
 			}
-			if (typeof v === "string") return `NAME:${v.trim()}`;
-			return toStringValue(v);
+			return null;
 		};
-		const na = normalize(a);
-		const nb = normalize(b);
-		return na === nb;
+		const sa = symbolName(a);
+		const sb = symbolName(b);
+		if (sa !== null && sb !== null) return sa === sb;
+		if (typeof a === "string" && typeof b === "string") return a.trim() === b.trim();
+		return toStringValue(a) === toStringValue(b);
 	},
 
 	get(obj: any, key: any) {
