@@ -1,5 +1,5 @@
-import { AnyNode, ASTNode, ProgramNode } from "./ast";
-import { builtins } from "./builtins";
+import type { AnyNode, ASTNode, ProgramNode } from "./ast.ts";
+import { builtins } from "./builtins.ts";
 
 export function toStringValue(v: any): string {
 	if (typeof v === "string") return v;
@@ -20,6 +20,16 @@ const hasBuiltin = (name: string): boolean =>
 
 const isTruthy = (v: any): boolean =>
 	!(v === null || v === undefined || v === "" || v === false || v === 0 || v === "false");
+
+type JitFn = (scope: Env, helpers: { callTag: (name: string, vals: any[]) => any; evalSymbol: (name: string, scope: Env) => any }) => any;
+const jitCache = new WeakMap<object, JitFn>();
+export const jitStats = { compiles: 0, hits: 0 };
+const disallowedJitHeads = new Set(["if", "quote", "quasiquote", "unquote", "let", "let*", "cond", "case", "defmacro"]);
+const constFoldBuiltins = new Set(["concat", "+", "-", "*", "=", "<", ">", "<=", ">=", "len", "upper", "lower", "trim"]);
+
+export interface EvaluateOptions {
+	enableJit?: boolean;
+}
 
 class Env {
 	parent?: Env;
@@ -58,15 +68,10 @@ class Macro {
 	}
 
 	expand(args: ASTNode[], macroEnv: Map<string, Macro>, callerBindings?: Map<string, ASTNode>): ASTNode {
-		if (args.length !== this.params.length) {
-			throw new Error(`macro arity mismatch: expected ${this.params.length} got ${args.length}`);
-		}
+		const TAIL_CALL = Symbol("tail-call");
 
-		const bindings = new Map<string, ASTNode>();
-		this.params.forEach((p, idx) => {
-			const arg = callerBindings ? substitute(args[idx], callerBindings, false) : args[idx];
-			bindings.set(p, cloneAst(arg));
-		});
+		type TailCall = { marker: typeof TAIL_CALL; target: Macro; args: ASTNode[]; caller: Map<string, ASTNode> };
+		const isTailCall = (v: any): v is TailCall => v && v.marker === TAIL_CALL;
 
 		const toAst = (v: any): ASTNode => astFromValue(v);
 
@@ -117,12 +122,12 @@ class Macro {
 			return substitute(node, env, true);
 		}
 
-		function evalValue(node: ASTNode): any {
+		function evalValue(node: ASTNode, allowTail: boolean, bindings: Map<string, ASTNode>): any {
 			switch (node.type) {
 				case "StringLiteral": return node.value;
 				case "Nil": return null;
 				case "Symbol": {
-					if (bindings.has(node.name)) return evalValue(bindings.get(node.name)!);
+					if (bindings.has(node.name)) return evalValue(bindings.get(node.name)!, allowTail, bindings);
 					return cloneAst(node);
 				}
 				case "List": {
@@ -130,26 +135,26 @@ class Macro {
 						const name = node.head.name;
 						if (name === "quote") return { type: "List", head: cloneAst(node.head), args: node.args.map(cloneAst) };
 						if (name === "quasiquote") return quasiquote(node.args[0], bindings);
-						if (name === "unquote") return evalValue(node.args[0]);
+						if (name === "unquote") return evalValue(node.args[0], allowTail, bindings);
 						if (name === "if") {
-							const cond = evalValue(node.args[0]);
+							const cond = evalValue(node.args[0], false, bindings);
 							const truthy = isTruthy(cond);
 							const branch = truthy ? node.args[1] : node.args[2];
-							return branch ? evalValue(branch) : null;
+							return branch ? evalValue(branch, allowTail, bindings) : null;
 						}
 						if (name === "=") {
-							const a = toStringValue(evalValue(node.args[0]));
-							const b = toStringValue(evalValue(node.args[1]));
+							const a = toStringValue(evalValue(node.args[0], false, bindings));
+							const b = toStringValue(evalValue(node.args[1], false, bindings));
 							return a === b ? "true" : "false";
 						}
 						if (name === "-") {
-							const nums = node.args.map(a => Number(evalValue(a)));
+							const nums = node.args.map(a => Number(evalValue(a, false, bindings)));
 							if (nums.some(n => Number.isNaN(n))) return { type: "List", head: cloneAst(node.head), args: node.args.map(sub => substitute(sub, bindings, false)) };
 							const res = nums.slice(1).reduce((acc, n) => acc - n, nums[0]);
 							return String(res);
 						}
 						if (name === "+") {
-							const vals = node.args.map(a => evalValue(a));
+							const vals = node.args.map(a => evalValue(a, false, bindings));
 							const nums = vals.map(v => Number(v));
 							if (nums.every(n => !Number.isNaN(n))) return String(nums.reduce((a, b) => a + b, 0));
 							return vals.map(toStringValue).join("");
@@ -157,29 +162,56 @@ class Macro {
 						if (name === "gensym") return builtins.gensym();
 						if (macroEnv.has(name)) {
 							const m = macroEnv.get(name)!;
+							if (allowTail) {
+								return { marker: TAIL_CALL, target: m, args: node.args, caller: bindings };
+							}
 							const expanded = m.expand(node.args, macroEnv, bindings);
-							return evalValue(expanded);
+							return evalValue(expanded, allowTail, bindings);
 						}
 					}
 					return {
 						type: "List",
-						head: toAst(evalValue(node.head)),
-						args: node.args.map(a => toAst(evalValue(a)))
+						head: toAst(evalValue(node.head, false, bindings)),
+						args: node.args.map(a => toAst(evalValue(a, false, bindings)))
 					};
 				}
 			}
 		}
 
-		let result: any = null;
-		for (const expr of this.body) {
-			result = evalValue(expr);
-		}
+		let nextArgs = args;
+		let nextCallerBindings = callerBindings;
+		let activeMacro: Macro = this;
 
-		const astResult = toAst(result);
-		if (this.params.length === 0 && astResult.type === "StringLiteral") {
-			throw new Error("macro must return AST");
+		expansion: while (true) {
+			if (nextArgs.length !== activeMacro.params.length) {
+				throw new Error(`macro arity mismatch: expected ${activeMacro.params.length} got ${nextArgs.length}`);
+			}
+
+			const bindings = new Map<string, ASTNode>();
+			activeMacro.params.forEach((p, idx) => {
+				const arg = nextCallerBindings ? substitute(nextArgs[idx], nextCallerBindings, false) : nextArgs[idx];
+				bindings.set(p, cloneAst(arg));
+			});
+
+			let result: any = null;
+			for (let i = 0; i < activeMacro.body.length; i++) {
+				const expr = activeMacro.body[i];
+				const val = evalValue(expr, i === activeMacro.body.length - 1, bindings);
+				if (isTailCall(val)) {
+					activeMacro = val.target;
+					nextArgs = val.args;
+					nextCallerBindings = val.caller;
+					continue expansion;
+				}
+				result = val;
+			}
+
+			const astResult = toAst(result);
+			if (activeMacro.params.length === 0 && astResult.type === "StringLiteral") {
+				throw new Error("macro must return AST");
+			}
+			return astResult;
 		}
-		return astResult;
 	}
 }
 
@@ -225,13 +257,124 @@ function buildList(items: ASTNode[]): ASTNode {
 	return { type: "List", head, args };
 }
 
+function constEval(node: ASTNode): { ok: true; value: any } | { ok: false } {
+	switch (node.type) {
+		case "StringLiteral": return { ok: true, value: node.value };
+		case "Nil": return { ok: true, value: null };
+		case "Symbol": return { ok: false };
+		case "List": {
+			if (node.head.type !== "Symbol") return { ok: false };
+			const name = node.head.name;
+			if (!constFoldBuiltins.has(name) || !hasBuiltin(name)) return { ok: false };
+			const foldedArgs: any[] = [];
+			for (const arg of node.args) {
+				const c = constEval(arg);
+				if (!c.ok) return { ok: false };
+				foldedArgs.push(c.value);
+			}
+			try {
+				return { ok: true, value: builtins[name](...foldedArgs) };
+			} catch {
+				return { ok: false };
+			}
+		}
+	}
+}
+
+function compileForJit(node: AnyNode): JitFn | null {
+	if ((node as ProgramNode).type === "Program") {
+		const prog = node as ProgramNode;
+		const compiledBody: JitFn[] = [];
+		for (const expr of prog.body) {
+			const c = compileForJit(expr);
+			if (!c) return null;
+			compiledBody.push(c);
+		}
+		return (scope, helpers) => {
+			let res: any = null;
+			for (const fn of compiledBody) res = fn(scope, helpers);
+			return res;
+		};
+	}
+
+	const astNode = node as ASTNode;
+	const constFolded = constEval(astNode as any);
+	if (constFolded.ok) {
+		const cached = constFolded.value;
+		return () => cached;
+	}
+	switch (astNode.type) {
+		case "StringLiteral": return () => astNode.value;
+		case "Nil": return () => null;
+		case "Symbol": return (_scope, helpers) => helpers.evalSymbol(astNode.name, _scope);
+		case "List": {
+			if (astNode.head.type !== "Symbol") return null;
+			const name = astNode.head.name;
+			if (disallowedJitHeads.has(name)) return null;
+			const compiledArgs: JitFn[] = [];
+			for (const arg of astNode.args) {
+				const c = compileForJit(arg);
+				if (!c) return null;
+				compiledArgs.push(c);
+			}
+			return (scope, helpers) => {
+				const argFns = compiledArgs;
+				const arity = argFns.length;
+				if (hasBuiltin(name)) {
+					const builtinFn = builtins[name];
+					switch (arity) {
+						case 0: return builtinFn();
+						case 1: return builtinFn(argFns[0](scope, helpers));
+						case 2: return builtinFn(argFns[0](scope, helpers), argFns[1](scope, helpers));
+						case 3: return builtinFn(argFns[0](scope, helpers), argFns[1](scope, helpers), argFns[2](scope, helpers));
+						default: {
+							const vals = new Array(arity);
+							for (let i = 0; i < arity; i++) vals[i] = argFns[i](scope, helpers);
+							return builtinFn(...vals);
+						}
+					}
+				}
+				const vals = new Array(arity);
+				for (let i = 0; i < arity; i++) vals[i] = argFns[i](scope, helpers);
+				return helpers.callTag(name, vals);
+			};
+		}
+	}
+	return null;
+}
+
+function getJit(node: AnyNode): JitFn | null {
+	const cached = jitCache.get(node as any);
+	if (cached) return cached;
+	const compiled = compileForJit(node);
+	if (compiled) {
+		jitCache.set(node as any, compiled);
+		jitStats.compiles++;
+		return compiled;
+	}
+	return null;
+}
+
 export function evaluate(
 	ast: AnyNode,
 	execTag: TagExecutor,
 	env: Env = new Env(),
 	macroEnv: Map<string, Macro> = new Map(),
-	_inMacro = false
+	_inMacro = false,
+	options: EvaluateOptions = {}
 ): any {
+	const useJit = options.enableJit !== false;
+	const jitHelpers = {
+		callTag: (name: string, vals: any[]) => callTag(name, vals),
+		evalSymbol: (name: string, scope: Env) => evalSymbol(name, scope)
+	};
+	if (useJit && macroEnv.size === 0) {
+		const direct = getJit(ast);
+		if (direct) {
+			jitStats.hits++;
+			return direct(env, jitHelpers);
+		}
+	}
 
 	function callTag(name: string, argVals: any[]): any {
 		if (argVals.length === 0) return execTag(name, "");
@@ -428,6 +571,9 @@ export function evaluate(
 			}
 			const newHead = macroExpand(node.head);
 			const newArgs = node.args.map(macroExpand);
+			const headChanged = newHead !== node.head;
+			const argsChanged = newArgs.length !== node.args.length || newArgs.some((a, idx) => a !== node.args[idx]);
+			if (!headChanged && !argsChanged) return node;
 			return { type: "List", head: newHead, args: newArgs };
 		}
 		return node;
@@ -441,6 +587,13 @@ export function evaluate(
 			expanded.head.name === "quote"
 		) {
 			return evalQuote(expanded.args[0]);
+		}
+		if (useJit) {
+			const maybeJit = expanded === node ? getJit(node) : getJit(expanded);
+			if (maybeJit) {
+				jitStats.hits++;
+				return maybeJit(scope, jitHelpers);
+			}
 		}
 		return evalNode(expanded, scope);
 	}
@@ -463,6 +616,13 @@ export function evaluate(
 	}
 
 	if (isProgram(ast)) {
+		if (useJit) {
+			const maybeJit = getJit(ast as any);
+			if (maybeJit) {
+				jitStats.hits++;
+				return maybeJit(env, jitHelpers);
+			}
+		}
 		return evalProgram(ast.body);
 	}
 

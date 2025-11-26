@@ -1,4 +1,4 @@
-import { Token } from "./ast";
+import type { Token } from "./ast.ts";
 
 export function lex(input: string): Token[] {
 	const tokens: Token[] = [];

@@ -6,13 +6,16 @@
     "build": "esbuild src/entry.ts --bundle --format=iife --minify --platform=browser --banner:js=\"/*! LeveretLisp (https://github.com/NotMyWing/LeveretLisp) */ (function(){\" --footer:js=\"})();\" --outfile=dist/leveretlisp.min.js",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "bench": "node scripts/bench-runner.js"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "esbuild": "^0.21.0",
     "jest": "^30.2.0",
     "ts-jest": "^29.4.5",
-    "typescript": "^5.4.5"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5",
+    "cross-env": "^7.0.3"
   }
 }

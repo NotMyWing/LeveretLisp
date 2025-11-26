@@ -1,4 +1,4 @@
-import { toStringValue } from "./evaluator";
+import { toStringValue } from "./evaluator.ts";
 
 export interface Builtins {
 	[name: string]: (...args: any[]) => any;

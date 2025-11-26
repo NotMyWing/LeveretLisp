@@ -1,6 +1,6 @@
-import { lex } from "../src/lexer";
-import { parse } from "../src/parser";
-import { evaluate } from "../src/evaluator";
+import { lex } from "../src/lexer.ts";
+import { parse } from "../src/parser.ts";
+import { evaluate, jitStats } from "../src/evaluator.ts";
 // If you have the wrapper/entry, keep this. If not, you can comment it out.
 import { runLeveretLisp } from "../src/leveretlisp";
 
@@ -999,9 +999,101 @@ describe("15. Common Lisp Compatibility (subset)", () => {
 	});
 
 	test("eq compares symbols by identity/name", () => {
-		const resSame = evalSrc("(eq 'foo 'foo)");
-		const resDiff = evalSrc("(eq 'foo 'bar)");
-		expect(resSame).toBe(true);
-		expect(resDiff).toBe(false);
+	const resSame = evalSrc("(eq 'foo 'foo)");
+	const resDiff = evalSrc("(eq 'foo 'bar)");
+	expect(resSame).toBe(true);
+	expect(resDiff).toBe(false);
+});
+
+
+describe("16. Tail Call Optimization", () => {
+	test("tail-recursive macro unwinds without stack overflow", () => {
+		const res = evalSrc(`
+      (defmacro countdown (n)
+        (if (= ,n "0")
+            "done"
+            (countdown (- ,n "1"))))
+
+      (countdown "50")
+    `);
+
+		expect(res).toBe("done");
 	});
+
+	test("tail recursion preserves accumulator across many steps", () => {
+		const res = evalSrc(`
+      (defmacro sum-down (n acc)
+        (if (= ,n "0")
+            acc
+            (sum-down (- ,n "1") (+ acc n))))
+
+      (sum-down "100" "0")
+    `);
+
+		expect(res).toBe("5050");
+	});
+
+	test("mutual tail recursion between macros", () => {
+		const res = evalSrc(`
+      (defmacro even? (n)
+        (if (= ,n "0")
+            "true"
+            (odd? (- ,n "1"))))
+
+      (defmacro odd? (n)
+        (if (= ,n "0")
+            "false"
+            (even? (- ,n "1"))))
+
+      (even? "200")
+    `);
+
+		expect(res).toBe("true");
+	});
+
+	test("tail recursion runs at very deep depth without stack overflow", () => {
+		const res = evalSrc(`
+      (defmacro countdown (n)
+        (if (= ,n "0")
+            "ok"
+            (countdown (- ,n "1"))))
+
+      (countdown "1500")
+    `);
+
+		expect(res).toBe("ok");
+	});
+});
+
+
+describe("17. JIT cache", () => {
+	test("simple application is compiled and reused", () => {
+		jitStats.compiles = 0;
+		jitStats.hits = 0;
+
+		const ast = parse(lex("(+ \"a\" \"b\" \"c\")"));
+		const first = evaluate(ast, execTag);
+		const beforeHits = jitStats.hits;
+		const second = evaluate(ast, execTag);
+
+		expect(first).toBe("abc");
+		expect(second).toBe("abc");
+		expect(jitStats.compiles).toBe(1);
+		expect(jitStats.hits).toBeGreaterThan(beforeHits);
+	});
+
+	test("JIT can be disabled via config", () => {
+		jitStats.compiles = 0;
+		jitStats.hits = 0;
+
+		const ast = parse(lex("(+ \"1\" \"2\")"));
+		const first = evaluate(ast, execTag, undefined, undefined, false, { enableJit: false });
+		const second = evaluate(ast, execTag, undefined, undefined, false, { enableJit: false });
+
+		expect(first).toBe("12");
+		expect(second).toBe("12");
+		expect(jitStats.compiles).toBe(0);
+		expect(jitStats.hits).toBe(0);
+	});
+});
 });

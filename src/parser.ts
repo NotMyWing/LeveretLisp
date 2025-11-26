@@ -1,4 +1,4 @@
-import { AnyNode, ASTNode, Token } from "./ast";
+import type { AnyNode, ASTNode, Token } from "./ast.ts";
 
 function sym(name: string): ASTNode {
 	return { type: "Symbol", name };

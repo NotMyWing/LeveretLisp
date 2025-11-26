@@ -1,4 +1,4 @@
-import { runLeveretLisp } from "./leveretlisp";
+import { runLeveretLisp } from "./leveretlisp.ts";
 
 (function () {
 	// The host environment provides: tag, msg, util.

@@ -1,11 +1,12 @@
-import { lex } from "./lexer";
-import { parse } from "./parser";
-import { evaluate } from "./evaluator";
+import { lex } from "./lexer.ts";
+import { parse } from "./parser.ts";
+import { evaluate } from "./evaluator.ts";
 
 export function runLeveretLisp(
 	src: string,
 	msg: any,
-	util: any
+	util: any,
+	config?: { enableJit?: boolean }
 ) {
 	const code = unwrapCodeBlock(src);
 	let tokens, ast, value;
@@ -13,7 +14,7 @@ export function runLeveretLisp(
 	try {
 		tokens = lex(code);
 		ast = parse(tokens);
-		value = evaluate(ast, util.executeTagSafe);
+		value = evaluate(ast, util.executeTagSafe, undefined, undefined, false, config);
 	} catch (e: any) {
 		msg.reply({ content: "leveretlisp error: " + e.message });
 		return;
@@ -40,6 +41,9 @@ function unwrapCodeBlock(src: string): string {
 
 function wrapPayload(v: any) {
 	if (typeof v === "string") return { content: v };
+	if (v && typeof v === "object" && Object.keys(v).length === 1 && typeof (v as any).content === "string") {
+		return (v as any).content;
+	}
 	if (v && typeof v === "object") return v;
 	return { content: JSON.stringify(v) };
 }
