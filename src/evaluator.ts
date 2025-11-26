@@ -21,7 +21,11 @@ const hasBuiltin = (name: string): boolean =>
 const isTruthy = (v: any): boolean =>
 	!(v === null || v === undefined || v === "" || v === false || v === 0 || v === "false");
 
-type JitFn = (scope: Env, helpers: { callTag: (name: string, vals: any[]) => any; evalSymbol: (name: string, scope: Env) => any }) => any;
+type JitFn = (scope: Env, helpers: {
+	callTag: (name: string, vals: any[]) => any;
+	evalSymbol: (name: string, scope: Env) => any;
+	execTag: TagExecutor;
+}) => any;
 const jitCache = new WeakMap<object, JitFn>();
 export const jitStats = { compiles: 0, hits: 0 };
 const disallowedJitHeads = new Set(["if", "quote", "quasiquote", "unquote", "let", "let*", "cond", "case", "defmacro"]);
@@ -311,6 +315,16 @@ function compileForJit(node: AnyNode): JitFn | null {
 			if (astNode.head.type !== "Symbol") return null;
 			const name = astNode.head.name;
 			if (disallowedJitHeads.has(name)) return null;
+			const constArgs: any[] = [];
+			let allConstArgs = true;
+			for (const arg of astNode.args) {
+				const c = constEval(arg);
+				if (!c.ok) {
+					allConstArgs = false;
+					break;
+				}
+				constArgs.push(c.value);
+			}
 			const compiledArgs: JitFn[] = [];
 			for (const arg of astNode.args) {
 				const c = compileForJit(arg);
@@ -334,9 +348,37 @@ function compileForJit(node: AnyNode): JitFn | null {
 						}
 					}
 				}
-				const vals = new Array(arity);
-				for (let i = 0; i < arity; i++) vals[i] = argFns[i](scope, helpers);
-				return helpers.callTag(name, vals);
+				if (allConstArgs) {
+					if (arity === 0) return helpers.execTag(name, "");
+					if (arity === 1) return helpers.execTag(name, toStringValue(constArgs[0]));
+					return helpers.execTag(name, constArgs.map(toStringValue).join(" "));
+				}
+				switch (arity) {
+					case 0: return helpers.execTag(name, "");
+					case 1: {
+						const v0 = argFns[0](scope, helpers);
+						return helpers.execTag(name, toStringValue(v0));
+					}
+					case 2: {
+						const v0 = argFns[0](scope, helpers);
+						const v1 = argFns[1](scope, helpers);
+						return helpers.execTag(name, `${toStringValue(v0)} ${toStringValue(v1)}`);
+					}
+					case 3: {
+						const v0 = argFns[0](scope, helpers);
+						const v1 = argFns[1](scope, helpers);
+						const v2 = argFns[2](scope, helpers);
+						return helpers.execTag(
+							name,
+							`${toStringValue(v0)} ${toStringValue(v1)} ${toStringValue(v2)}`
+						);
+					}
+					default: {
+						const vals = new Array(arity);
+						for (let i = 0; i < arity; i++) vals[i] = argFns[i](scope, helpers);
+						return helpers.callTag(name, vals);
+					}
+				}
 			};
 		}
 	}
@@ -366,7 +408,8 @@ export function evaluate(
 	const useJit = options.enableJit !== false;
 	const jitHelpers = {
 		callTag: (name: string, vals: any[]) => callTag(name, vals),
-		evalSymbol: (name: string, scope: Env) => evalSymbol(name, scope)
+		evalSymbol: (name: string, scope: Env) => evalSymbol(name, scope),
+		execTag
 	};
 	if (useJit && macroEnv.size === 0) {
 		const direct = getJit(ast);
