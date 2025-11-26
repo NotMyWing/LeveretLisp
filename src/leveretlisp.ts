@@ -41,9 +41,11 @@ function unwrapCodeBlock(src: string): string {
 
 function wrapPayload(v: any) {
 	if (typeof v === "string") return { content: v };
-	if (v && typeof v === "object" && Object.keys(v).length === 1 && typeof (v as any).content === "string") {
-		return (v as any).content;
+	if (v && typeof v === "object") {
+		const passThroughKeys = ["content", "file", "embed"];
+		const hasPassThrough = passThroughKeys.some(key => Object.prototype.hasOwnProperty.call(v, key));
+		if (hasPassThrough) return v;
+		return { content: JSON.stringify(v) };
 	}
-	if (v && typeof v === "object") return v;
 	return { content: JSON.stringify(v) };
 }
